@@ -1,0 +1,39 @@
+#!/bin/sh
+#
+#
+#PBS -N SmallNReSel
+#PBS -o SmallN00-o-
+#PBS -e SmallN00-e-
+#PBS -m ae
+#PBS -l walltime=11:30:00
+#PBS -l vmem=20gb
+
+# Script to run the analysis.
+module load FSL/5.0.9-intel-2015b   
+. $FSLDIR/etc/fslconf/fsl.sh
+
+# scriptfolder
+ffold=./02_scripts/03_null
+# data folder
+dfold=./01_fcon/
+
+for i in {151..197}
+do
+	echo $i 
+	foldid=$(printf "%03d\n" $i)
+	cd $dfold/$foldid
+	cp $ffold/design_s4_level1.fsf .
+	cp $ffold/design_s6_level1.fsf .
+	feat_model design_s4_level1
+	feat design_s4_level1.fsf
+	cp ./01_s4.feat/stats/cope1* ./01_s4/
+	cp ./01_s4.feat/stats/varcope1* ./01_s4/
+	cp ./01_s4.feat/mask* ./01_s4/
+	feat_model design_s6_level1
+	feat design_s6_level1.fsf
+	cp ./02_s6.feat/stats/cope1* ./02_s6/
+	cp ./02_s6.feat/stats/varcope1* ./02_s6/
+	cp ./02_s6.feat/mask* ./02_s6/
+	rm design_s*
+	rm -r *.feat
+done

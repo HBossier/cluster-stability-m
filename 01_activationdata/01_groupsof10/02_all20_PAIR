@@ -1,0 +1,189 @@
+#!/bin/bash
+S=$1
+NBOOT=$2
+rstart=1
+
+START=$(date +%s)
+simid=$(printf 'sel%04d' $S)
+selection=$(printf '%04d' $S)
+
+# Data folder where the data is supposed to be stored. cope/varcopes.
+# DDir="./Onderzoek/doctoraat/scripts/Paper04/01_data/02_emotion/02_all/00_rawData"
+# tmpdir="./Onderzoek/doctoraat/scripts/Paper04/01_data/02_emotion/01_smallN/tmp/"
+# HDIR="./Onderzoek/doctoraat/scripts/Paper04/02_scripts/02_emotion/01_groupsof10"
+# SDir="./Onderzoek/doctoraat/scripts/Paper04/01_data/02_emotion/01_smallN/"
+
+DDir="./Onderzoek/04_hpc_emotion/"
+tmpdir="./Onderzoek/Paper04/01_data/02_emotion/01_smallN/tmp/"
+SDir="./Onderzoek/Paper04/02_results/02_emotion/01_smallN/"
+HDIR="./Onderzoek/Paper04/02_scripts/02_emotion/01_groups10"
+
+SDIR=$SDir$selection
+sDir=$tmpdir$simid
+
+echo "delete previous selection "
+[ -d $SDIR ] && rm -r $SDIR || echo 'Directory was not found'
+mkdir -p $SDIR
+echo "delete previous tmp files folder "
+[ -d $sDir ] && rm -r $sDir || echo 'Directory was not found'
+mkdir -p $sDir
+cd $sDir
+
+# select the individuals to take in the sample e.g. 1-10
+python $HDIR/02_RSEL20ID.py $S 76 > $SDIR/tmp
+mkdir $sDir/data
+
+for i in $(cat $SDIR/tmp)
+do
+	j=$(expr $i + 1)
+	cp -r $DDir$j $sDir/data
+done
+
+DDir=$sDir/data 
+
+# merge the COPE/VARCOPE/MASK for the group analysis and obtain a group map.
+cd $DDir
+fslmerge -t $sDir/copeREG `
+for i in $(cat $SDIR/tmp)
+do
+	j=$(expr $i + 1)
+	echo ./$j/cope3
+done
+`
+
+fslmerge -t $sDir/varcopeREG `
+for i in $(cat $SDIR/tmp)
+do
+	j=$(expr $i + 1)
+	echo ./$j/varcope3
+done
+`
+fslmerge -t $sDir/MASK `
+for i in $(cat $SDIR/tmp)
+do
+	j=$(expr $i + 1)
+	echo ./$j/*mask*
+done
+`
+cd $sDir
+cp $HDIR/02_design* .
+cp $HDIR/02_cluster.R $sDir
+cp $HDIR/02_detMINclus.R $sDir
+
+$FSLDIR/bin/flameo --cope=./copeREG --varcope=./varcopeREG --mask=MASK --dm=02_design.mat --tc=02_design.con --cs=02_design.grp --runmode=flame1 --ld=$SDIR/output
+
+# make sure the mask is properly passed to the bootstrap samples
+cp $SDIR/output/mask* $sDir
+
+# threshold original image
+$FSLDIR/bin/cluster -i $SDIR/output/zstat1 -t 3.090232 --oindex=$SDIR/cl > $SDIR/filecon
+smoothest -d 19 -r $SDIR/output/res4d.nii.gz -m $SDIR/output/mask.nii.gz -V > $SDIR/smoothness$selection
+
+Rscript $HDIR/02_detMINclus.R 0.01 $SDIR/output/mask.nii.gz $SDIR/smoothness$selection  > VAR
+var=$(cat VAR)
+
+Rscript $sDir/02_cluster.R $SDIR/filecon $SDIR 66 
+min75=$(awk 'FNR == 1 {print $1}' $SDIR/cltmp)
+
+Rscript $sDir/02_cluster.R $SDIR/filecon $SDIR $var
+minVAR=$(awk 'FNR == 1 {print $1}' $SDIR/cltmp)
+
+fslmaths $SDIR/cl.nii.gz -thr $min75 -bin $SDIR/out_$simid\_75
+fslmaths $SDIR/cl.nii.gz -thr $minVAR -bin $SDIR/out_$simid\_10
+
+
+
+# compute stability
+for ((r=$rstart; r<=$NBOOT; r++ ))
+do
+#statements
+# generate random noise and random set of numbers 1...10 and simulate noise saved in folder with resulst
+id=$(printf 'p%04d' $r)
+echo $id
+foldtmp=$sDir/$id
+[ -d $foldtmp ] && rm -r $foldtmp || echo 'Directory was not found'
+mkdir -p $foldtmp
+cd $foldtmp
+
+
+echo "python time"
+python $HDIR/02_RandomNR.py $SDIR/tmp $S $r  > ran$r
+
+# merge the cope files 
+fslmerge -t $foldtmp/cREG `
+for i in $(cat ran$r)
+do
+j=$(expr $i + 1)
+echo $DDir/$j/cope3
+done
+`
+
+fslmerge -t $foldtmp/vcREG `
+for i in $(cat ran$r)
+do
+j=$(expr $i + 1)
+echo $DDir/$j/varcope3
+done
+`
+
+#copy the design information in the saving directory
+cp $HDIR/02_design* $foldtmp
+
+# Actual analysis
+cd $foldtmp
+$FSLDIR/bin/flameo --cope=$foldtmp/cREG --varcope=$foldtmp/vcREG --mask=$sDir/mask --dm=$foldtmp/02_design.mat --tc=$foldtmp/02_design.con --cs=$foldtmp/02_design.grp --runmode=flame1 --ld=$foldtmp/output
+
+# save smoothness FWE
+smoothest -d 19 -r $foldtmp/output/res4d.nii.gz -m $foldtmp/output/mask.nii.gz -V > $SDIR/smoothness$S_$r
+
+# Threshold the image to binary
+$FSLDIR/bin/cluster -i $foldtmp/output/zstat1 -t 3.090232 --oindex=$foldtmp/cl > $foldtmp/filecon
+
+
+Rscript $sDir/02_cluster.R $foldtmp/filecon $foldtmp $var
+minVAR=$(awk 'FNR == 1 {print $1}' $foldtmp/cltmp)
+
+# minimal cluster size with FWMH average of 77 subjects equals 41, thus >40
+Rscript $sDir/02_cluster.R $foldtmp/filecon $foldtmp 66
+min75=$(awk 'FNR == 1 {print $1}' $foldtmp/cltmp)
+
+fslmaths $foldtmp/cl.nii.gz -thr $min75 -bin $foldtmp/out_$simid\_$id\_75
+fslmaths $foldtmp/cl.nii.gz -thr $minVAR -bin $foldtmp/out_$simid\_$id\_var
+
+# save zmap en thesholded zmap.
+#cp $foldtmp/output/zstat1* $SDIR/zstat_$simid\_$id\.nii.gz
+cp $foldtmp/out_$simid* $SDIR/
+rm -r $foldtmp
+done
+
+cd $SDIR
+fslmaths ./output/zstat1.nii.gz -mul 0 OUT75.nii.gz
+fslmaths ./output/zstat1.nii.gz -mul 0 OUTVAR.nii.gz
+
+for ((r=1; r<=$NBOOT; r++ ))
+do
+#statements
+# generate random noise and random set of numbers 1...10 and simulate noise saved in folder with resulst
+id=$(printf 'p%04d' $r)
+fslmaths OUT75 -add out_$simid\_$id\_75 OUT75
+fslmaths OUTVAR -add out_$simid\_$id\_var OUTVAR
+done
+
+# calculate the stability -map
+fslmaths OUT75 -div $NBOOT OUT75
+fslmaths OUTVAR -div $NBOOT OUTVAR
+
+# analyze results and combine results in one table
+Rscript $HDIR/00_results.R
+rm out_$simid\_p*
+rm -r $sDir
+cp $SDIR/output/zstat* $SDIR
+cp $SDIR/output/mask* $SDIR
+rm -r $SDIR/output
+
+# decide what voxels to incorporate for loop 1	
+echo "job finished in"
+END=$(date +%s)
+DIFF=$(echo "scale=3; ( $END - $START ) / 60.00" | bc)
+echo $DIFF
+

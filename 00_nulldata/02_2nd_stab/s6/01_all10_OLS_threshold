@@ -1,0 +1,227 @@
+#!/bin/bash
+S=$1
+NBOOT=$2
+rstart=1
+
+START=$(date +%s)
+simid=$(printf 'sel%04d' $S)
+selection=$(printf '%04d' $S)
+
+# Data folder where the data is supposed to be stored. cope/varcopes.
+# DDir="./Onderzoek/doctoraat/scripts/Paper04/01_data/02_emotion/02_all/00_rawData"
+# tmpdir="./Onderzoek/doctoraat/scripts/Paper04/01_data/02_emotion/01_smallN/tmp/"
+# HDIR="./Onderzoek/doctoraat/scripts/Paper04/02_scripts/02_emotion/01_groupsof10"
+# SDir="./Onderzoek/doctoraat/scripts/Paper04/01_data/02_emotion/01_smallN/"
+
+DDir=./Onderzoek/01_fcon/
+tmpdir=./Onderzoek/Paper04/01_data/00_null/00_tmp_s6_10/
+SDir=./Onderzoek/Paper04/01_data/00_null_s6/
+HDIR=./Onderzoek/Paper04/02_scripts/03_null/02_2nd_stab/s6
+
+SDIR=$SDir$selection
+sDir=$tmpdir$simid
+
+echo "delete previous selection "
+[ -d $SDIR ] && rm -r $SDIR || echo 'Directory was not found'
+mkdir -p $SDIR
+echo "delete previous tmp files folder "
+[ -d $sDir ] && rm -r $sDir || echo 'Directory was not found'
+mkdir -p $sDir
+cd $sDir
+
+# select the individuals to take in the sample e.g. 1-10
+python $HDIR/01_sel10.py $S 198  > $SDIR/tmp
+mkdir $sDir/data
+
+for i in $(cat $SDIR/tmp)
+do
+j=$(expr $i + 1)
+foldid=$(printf '%03d' $j)
+echo $foldid
+cp -r $DDir$foldid $sDir/data
+done
+
+DDir=$sDir/data 
+
+# merge the COPE/VARCOPE/MASK for the group analysis and obtain a group map.
+cd $DDir
+fslmerge -t $sDir/copeREG `
+for i in $(cat $SDIR/tmp)
+do
+j=$(expr $i + 1)
+foldid=$(printf '%03d' $j)
+echo ./$foldid/02_s6/cope1
+done
+` 2> $SDIR/null
+
+fslmerge -t $sDir/varcopeREG `
+for i in $(cat $SDIR/tmp)
+do
+j=$(expr $i + 1)
+foldid=$(printf '%03d' $j)
+echo ./$foldid/02_s6/varcope1
+done
+` 2> $SDIR/null
+
+fslmerge -t $sDir/MASK `
+for i in $(cat $SDIR/tmp)
+do
+j=$(expr $i + 1)
+foldid=$(printf '%03d' $j)
+echo ./$foldid/02_s6/*mask*
+done
+` 2> $SDIR/null
+
+#for efficiency, everything is copied to the tmp folder. As such this does not cause read/write problems on the cluster,
+#when e.g. 2 run access the file simultaneously.
+cd $sDir
+cp $HDIR/01_design* $sDir
+cp $HDIR/cluster.R $sDir
+cp $HDIR/detMINclus.R $sDir
+cp $HDIR/02_RandomNR.py $sDir
+cp $HDIR/00_results.R $sDir
+
+# copy the design files 
+$FSLDIR/bin/flameo --cope=./copeREG --mask=MASK --dm=01_design.mat --tc=01_design.con --cs=01_design.grp --runmode=ols --ld=$SDIR/output
+
+# make sure the mask is properly passed to the bootstrap samples
+cp $SDIR/output/mask* $sDir
+
+# threshold original image
+smoothest -d 9 -r $SDIR/output/res4d.nii.gz -m $SDIR/output/mask.nii.gz -V > $SDIR/smoothness$selection
+smoothest -d 9 -r $SDIR/output/res4d.nii.gz -m $SDIR/output/mask.nii.gz | awk '/DLH/ {print $2}' > $SDIR/thresh_zstat1.dlh
+smoothest -d 9 -r $SDIR/output/res4d.nii.gz -m $SDIR/output/mask.nii.gz | awk '/VOLUME/ {print $2}' > $SDIR/thresh_zstat1.vol
+
+$FSLDIR/bin/cluster -i $SDIR/output/zstat1 -t 3.090232 -d $(cat $SDIR/thresh_zstat1.dlh) -p 1.0 --volume=$(cat $SDIR/thresh_zstat1.vol) --oindex=$SDIR/cl > $SDIR/filecon
+
+
+
+Rscript $sDir/detMINclus.R 0.001 $SDIR/output/mask.nii.gz $SDIR/smoothness$selection  > $SDIR/VAR
+var001=$(cat $SDIR/VAR)
+Rscript $sDir/detMINclus.R 0.005 $SDIR/output/mask.nii.gz $SDIR/smoothness$selection  > $SDIR/VAR
+var005=$(cat $SDIR/VAR)
+Rscript $sDir/detMINclus.R 0.01 $SDIR/output/mask.nii.gz $SDIR/smoothness$selection  > $SDIR/VAR
+var01=$(cat $SDIR/VAR)
+Rscript $sDir/detMINclus.R 0.05 $SDIR/output/mask.nii.gz $SDIR/smoothness$selection  > $SDIR/VAR
+var05=$(cat $SDIR/VAR)
+
+Rscript $sDir/cluster.R $SDIR/filecon $SDIR $var001
+minVAR001=$(awk 'FNR == 1 {print $1}' $SDIR/cltmp)
+Rscript $sDir/cluster.R $SDIR/filecon $SDIR $var005
+minVAR005=$(awk 'FNR == 1 {print $1}' $SDIR/cltmp)
+Rscript $sDir/cluster.R $SDIR/filecon $SDIR $var01
+minVAR01=$(awk 'FNR == 1 {print $1}' $SDIR/cltmp)
+Rscript $sDir/cluster.R $SDIR/filecon $SDIR $var05
+minVAR05=$(awk 'FNR == 1 {print $1}' $SDIR/cltmp)
+
+
+fslmaths $SDIR/cl.nii.gz -thr $minVAR001 -bin $SDIR/out_$simid\_001
+fslmaths $SDIR/cl.nii.gz -thr $minVAR005 -bin $SDIR/out_$simid\_005
+fslmaths $SDIR/cl.nii.gz -thr $minVAR01 -bin $SDIR/out_$simid\_01
+fslmaths $SDIR/cl.nii.gz -thr $minVAR05 -bin $SDIR/out_$simid\_05
+
+
+# compute stability
+for ((r=$rstart; r<=$NBOOT; r++ ))
+do
+#statements
+id=$(printf 'p%04d' $r)
+echo $id
+foldtmp=$sDir/$id
+[ -d $foldtmp ] && rm -r $foldtmp || echo 'Directory was not found'
+mkdir -p $foldtmp
+cd $foldtmp
+
+echo "python time"
+python $sDir/02_RandomNR.py $SDIR/tmp $S $r 10 > ran$r
+
+# merge the cope files 
+fslmerge -t $foldtmp/cREG `
+for i in $(cat ran$r)
+do
+j=$(expr $i + 1)
+foldid=$(printf '%03d' $j)
+echo $DDir/$foldid/02_s6/cope1
+done
+` 2> $SDIR/null
+
+fslmerge -t $foldtmp/vcREG `
+for i in $(cat ran$r)
+do
+j=$(expr $i + 1)
+foldid=$(printf '%03d' $j)
+echo $DDir/$foldid/02_s6/varcope1
+done
+` 2> $SDIR/null
+
+#copy the design information in the saving directory
+cp $sDir/01_design* $foldtmp
+
+# Actual analysis
+cd $foldtmp
+$FSLDIR/bin/flameo --cope=$foldtmp/cREG --varcope=$foldtmp/vcREG --mask=$sDir/mask --dm=$foldtmp/01_design.mat --tc=$foldtmp/01_design.con --cs=$foldtmp/01_design.grp --runmode=ols --ld=$foldtmp/output > $SDIR/null
+
+# save smoothness FWE
+smoothest -d 9 -r $foldtmp/output/res4d.nii.gz -m $foldtmp/output/mask.nii.gz > $SDIR/smoothness$S_$r
+
+# Threshold the image to binary
+$FSLDIR/bin/cluster -i $foldtmp/output/zstat1 -t 3.090232 --oindex=$foldtmp/cl > $foldtmp/filecon
+
+Rscript $sDir/cluster.R $foldtmp/filecon $foldtmp $var001 > $SDIR/null
+minVAR001=$(awk 'FNR == 1 {print $1}' $foldtmp/cltmp)
+Rscript $sDir/cluster.R $foldtmp/filecon $foldtmp $var005 > $SDIR/null
+minVAR005=$(awk 'FNR == 1 {print $1}' $foldtmp/cltmp)
+Rscript $sDir/cluster.R $foldtmp/filecon $foldtmp $var01 > $SDIR/null
+minVAR01=$(awk 'FNR == 1 {print $1}' $foldtmp/cltmp)
+Rscript $sDir/cluster.R $foldtmp/filecon $foldtmp $var05 > $SDIR/null
+minVAR05=$(awk 'FNR == 1 {print $1}' $foldtmp/cltmp)
+
+fslmaths $foldtmp/cl.nii.gz -thr $minVAR001 -bin $foldtmp/out_$simid\_$id\_var001
+fslmaths $foldtmp/cl.nii.gz -thr $minVAR005 -bin $foldtmp/out_$simid\_$id\_var005
+fslmaths $foldtmp/cl.nii.gz -thr $minVAR01 -bin $foldtmp/out_$simid\_$id\_var01
+fslmaths $foldtmp/cl.nii.gz -thr $minVAR05 -bin $foldtmp/out_$simid\_$id\_var05
+
+# save zmap en thesholded zmap.
+#cp $foldtmp/output/zstat1* $SDIR/zstat_$simid\_$id\.nii.gz
+cp $foldtmp/out_$simid* $SDIR/
+rm -r $foldtmp
+done
+
+cd $SDIR
+fslmaths ./output/zstat1.nii.gz -mul 0 OUT001.nii.gz
+fslmaths ./output/zstat1.nii.gz -mul 0 OUT005.nii.gz
+fslmaths ./output/zstat1.nii.gz -mul 0 OUT01.nii.gz
+fslmaths ./output/zstat1.nii.gz -mul 0 OUT05.nii.gz
+
+for ((r=1; r<=$NBOOT; r++ ))
+do
+#statements
+# generate random noise and random set of numbers 1...10 and simulate noise saved in folder with resulst
+id=$(printf 'p%04d' $r)
+fslmaths OUT001 -add out_$simid\_$id\_var001 OUT001
+fslmaths OUT005 -add out_$simid\_$id\_var005 OUT005
+fslmaths OUT01  -add out_$simid\_$id\_var01 OUT01
+fslmaths OUT05  -add out_$simid\_$id\_var05 OUT05
+done
+
+# calculate the stability -map
+fslmaths OUT001 -div $NBOOT OUT001
+fslmaths OUT005 -div $NBOOT OUT005
+fslmaths OUT01 -div $NBOOT OUT01
+fslmaths OUT05 -div $NBOOT OUT05
+
+# analyze results and combine results in one table
+Rscript $sDir/00_results.R OUT001 OUT005 OUT01 OUT05
+rm out_$simid\_*
+rm -r $sDir
+cp $SDIR/output/zstat* $SDIR
+cp $SDIR/output/mask* $SDIR
+rm -r $SDIR/output
+rm $SDIR/null
+
+# decide what voxels to incorporate for loop 1	
+echo "job finished in"
+END=$(date +%s)
+DIFF=$(echo "scale=3; ( $END - $START ) / 60.00" | bc)
+echo $DIFF
+

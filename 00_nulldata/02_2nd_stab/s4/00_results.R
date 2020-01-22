@@ -1,0 +1,61 @@
+# script to output only the final result table
+input <- commandArgs(TRUE)
+# functions
+from_cluster_to_voxels <- function(nifti.file){
+	require(oro.nifti)
+	tmp <- readNIfTI(nifti.file)
+	raCl <- range(tmp)
+	TOT <- length(which(tmp!=0))
+	OUT <- matrix(NA, ncol=4, nrow=TOT)
+	strt <-1
+	for(i in seq(raCl[1]+1, raCl[2])){
+		strt1<-length(which(tmp==i))+strt -1
+		#cat(strt, " to ")
+		#cat(strt1, "\n")
+		OUT[strt:strt1,1] <- i
+		OUT[strt:strt1,2:4] <- which(tmp==i, arr.ind=TRUE	)
+		strt <- strt1+1
+	}
+	rm(tmp)
+	OUT
+}
+library(Hmisc)
+library(oro.nifti)
+cat("start analysing results \n")
+for(K in input){
+	nfile 		<- "cl.nii.gz"
+	stab.file 	<- paste(K, ".nii.gz", sep="")
+	fcon		<- "filecon"
+	cat(stab.file, " .. read in .. \n")
+	voxMatrix <- from_cluster_to_voxels(nfile)
+	tmp<-readNIfTI(stab.file)
+	voxMatrix <- cbind(voxMatrix,tmp[voxMatrix[,2:4]])
+
+	voxM <- data.frame(voxMatrix)
+	names(voxM) <- c("ID", "x", "y","z", "stab")
+	voxM$ID <- as.factor(voxM$ID)
+	clS		<- aggregate(stab ~ ID, data=voxM, mean)
+	clS_sd 	<- aggregate(stab ~ ID, data=voxM, sd)
+	names(clS) <- c("ID", "Stability")
+	names(clS_sd) <- c("ID", "sd")
+	clS$sd <- clS_sd$sd
+	tmp <- readNIfTI(nfile)
+	tmpseq <- as.numeric(as.character(clS$ID))
+	for(i in tmpseq){
+		clS$size[tmpseq==i]<-length(which(tmp==i))
+	}
+	rm(tmp)
+
+	# Read in the orignal cluster file
+	tmp <-read.table(fcon, sep="\t", header=TRUE)
+	names(tmp)[1] <- "ID"
+	out <- merge(x = clS, y = tmp, by ="ID", all.x=TRUE)
+
+	out<- out[,]
+	out<-out[order(out$ID, decreasing=TRUE),]
+	out$ID <- as.integer(as.character(out$ID))
+	cat("\t", "write output", "\n")
+	write.table(out, file=paste("STAB_", K,".txt", sep=""), row.names=FALSE)
+	cat("\t . \n")
+}
+cat("done. \n")

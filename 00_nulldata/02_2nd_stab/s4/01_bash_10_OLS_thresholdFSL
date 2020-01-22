@@ -1,0 +1,19 @@
+#!/bin/sh
+#
+#
+#PBS -N NULL_10_s4
+#PBS -o ./01_tmp/Null_10-o-
+#PBS -e ./01_tmp/Null_10-e-
+#PBS -m ae
+#PBS -l walltime=5:00:00
+#PBS -l vmem=20gb
+
+# Script to run the analysis.
+module load R/3.2.1-intel-2015b
+module load FSL/5.0.9-intel-2015b   
+. $FSLDIR/etc/fslconf/fsl.sh
+
+cd ./Paper04/02_scripts/03_null/02_2nd_stab/s4
+
+# for 0-data -> 1000 iterations with 1000 bootstrap samples to determine stability
+./01_all10_OLS_threshold $PBS_ARRAYID 1000
